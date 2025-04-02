@@ -6,51 +6,114 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"sync"
+	"time"
 )
+
+type Task struct {
+	Status    int        // 0: pending, 1: in progress, 2: completed
+	ID        int        // task ID
+	Type      int        // 0: map, 1: reduce, 2: wait, 3: done
+	Filenames []string   // text files or intermediate files
+	AsignedAt time.Time  // time when the task was assigned
+}
 
 type Coordinator struct {
 	// Your definitions here.
-	nReduce   int       // number of reduce tasks
-	nMap      int       // number of map tasks
-	nDone     int       // number of finished tasks
-	filenames []string  // filenames of map tasks
-	issued    []bool    // whether a map task has been issued
-	finished  int       // number of finished reduce tasks
+	nReduce     int         // number of reduce tasks
+	isMapDone   bool        // true if all map tasks are done
+	mapTasks    []Task      // list of map tasks length is equal to number of files
+	reduceTasks []Task      // list of reduce tasks length is equal to nReduce
+	mu          sync.Mutex  // mutex to protect shared data
 }
 
 // Your code here -- RPC handlers for the worker to call.
-func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) error {
-	if c.nDone == c.nMap {
-		reply.TaskType = 1
+func (c *Coordinator) RequestTask(arg *RequestTaskArgs, reply *RequestTaskReply) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// try to assign a map task
+	if c.asignMapTask(arg, reply) {
 		return nil
 	}
-	for i, isIssued := range c.issued {
-		if isIssued {
-			continue
-		}
-		c.issued[i] = true
-		reply.TaskType = 0
-		reply.Filename = c.filenames[i]
+	// all map tasks are issued
+	// check if all map tasks are done
+	if !c.isAllMapTaskDone() {
+		c.assignWaitTask(arg, reply)
 		return nil
 	}
+	// try to assign a reduce task
+	if c.asignReduceTask(arg, reply) {
+		return nil
+	}
+	// all reduce tasks are issued
+	// check if all reduce tasks are done(e.g. all tasks are completed)
+	if !c.Done() {
+		c.assignWaitTask(arg, reply)
+		return nil
+	}
+	// all tasks are done
+	c.assignExitTask(arg, reply)
 	return nil
 }
 
-func (c *Coordinator) MapRequest(args *MapRequestArgs, reply *MapRequestReply) error {
-	// find a file that has not been issued
-	for i, isIssued := range c.issued {
-		if isIssued {
-			continue
+func (c *Coordinator) asignMapTask(arg *RequestTaskArgs, reply *RequestTaskReply) bool {
+	for i := 0; i < len(c.mapTasks); i++ {
+		if c.mapTasks[i].Status == 0 {
+			reply.TaskType = 0
+			reply.Filename = c.mapTasks[i].Filenames[0]
+			reply.TaskID = c.mapTasks[i].ID
+			c.mapTasks[i].Status = 1
+			c.mapTasks[i].AsignedAt = time.Now()
+			return true
 		}
-		c.issued[i] = true
-		reply.Filename = c.filenames[i]
-		return nil
 	}
-	return nil
+	return false
 }
 
-func (c *Coordinator) ReduceRequest(args *ReduceRequestArgs, reply *ExampleReply) error {
-	return nil
+func (c *Coordinator) asignReduceTask(arg *RequestTaskArgs, reply *RequestTaskReply) bool {
+	for i := 0; i < len(c.reduceTasks); i++ {
+		if c.reduceTasks[i].Status == 0 {
+			reply.TaskType = 1
+			reply.Filenames = nil
+			reply.TaskID = c.reduceTasks[i].ID
+			c.reduceTasks[i].Status = 1
+			c.reduceTasks[i].AsignedAt = time.Now()
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Coordinator) assignWaitTask(arg *RequestTaskArgs, reply *RequestTaskReply) {
+	reply.TaskType  = 2    // wait task
+	reply.Filenames = nil
+	reply.TaskID    = -1
+}
+
+func (c *Coordinator) assignExitTask(arg *RequestTaskArgs, reply *RequestTaskReply) {
+	reply.TaskType  = 3    // exit task
+	reply.Filenames = nil
+	reply.TaskID    = -1
+}
+
+func (c *Coordinator) checkMapTaskTimeout() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := 0; i < len(c.mapTasks); i++ {
+		if c.mapTasks[i].Status == 1 && time.Since(c.mapTasks[i].AsignedAt) > 10*time.Second {
+			c.mapTasks[i].Status = 0
+		}
+	}
+}
+
+func (c *Coordinator) isAllMapTaskDone() bool {
+	// check if any map task is not done
+	for _, task := range c.mapTasks {
+		if task.Status != 2 {
+			return false
+		}
+	}
+	return true
 }
 
 // an example RPC handler.
@@ -78,14 +141,16 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
-
 	// Your code here.
-	if c.finished == c.nReduce {
-		ret = true
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// check if all map tasks are done
+	for _, task := range c.reduceTasks {
+		if task.Status != 2 {
+			return false
+		}
 	}
-
-	return ret
+	return true 
 }
 
 // create a Coordinator.
@@ -96,11 +161,21 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	// Your code here.
 	c.nReduce   = nReduce
-	c.nMap      = len(files)
-	c.nDone     = 0
-	c.filenames = files
-	c.issued    = make([]bool, c.nMap)
-	c.finished  = 0
+	c.isMapDone = false
+	c.mapTasks  = make([]Task, len(files))
+	c.reduceTasks = make([]Task, nReduce)
+	for i := 0; i < len(files); i++ {
+		c.mapTasks[i].ID = i
+		c.mapTasks[i].Type = 0
+		c.mapTasks[i].Filenames = files[i : i+1]
+		c.mapTasks[i].Status = 0
+	}
+	for i := 0; i < nReduce; i++ {
+		c.reduceTasks[i].ID = i
+		c.reduceTasks[i].Type = 1
+		c.reduceTasks[i].Filenames = make([]string, 0)
+		c.reduceTasks[i].Status = 0
+	}
 	c.server()
 	return &c
 }

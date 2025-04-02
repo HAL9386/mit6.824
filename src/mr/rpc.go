@@ -9,6 +9,7 @@ package mr
 import (
 	"os"
 	"strconv"
+	"time"
 )
 
 //
@@ -29,23 +30,22 @@ type RequestTaskArgs struct {
 }
 
 type RequestTaskReply struct {
-	TaskType int     // 0: map, 1: reduce, 2: done
-	Filename string
+	TaskType int     // 0: map, 1: reduce, 2: wait, 3: done
+	Filenames []string  // filenames for task either map or reduce
+	TaskID int
+	NReduce int
+	AsignedAt time.Time
 }
 
-type MapRequestArgs struct {
-	FileName string
+type TaskReportArgs struct {
+	TaskID int
+	TaskType int
 }
 
-type MapRequestReply struct {
-	Filename string
-}
-
-type ReduceRequestArgs struct {
-	FileName string
-}
-
-type ReduceRequestReply struct {
+type TaskReportReply struct {
+	TaskID int
+	TaskType int
+	Status int
 }
 
 // Cook up a unique-ish UNIX-domain socket name
