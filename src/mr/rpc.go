@@ -30,22 +30,20 @@ type RequestTaskArgs struct {
 }
 
 type RequestTaskReply struct {
-	TaskType int     // 0: map, 1: reduce, 2: wait, 3: done
-	Filenames []string  // filenames for task either map or reduce
-	TaskID int
-	NReduce int
-	AsignedAt time.Time
+	TaskType  int        // 0: map, 1: reduce, 2: wait, 3: done
+	Filenames []string   // filenames for task either map or reduce
+	TaskID    int        // taskid 
+	NReduce   int        // nreduce 
+	AsignedAt time.Time  // 
 }
 
 type TaskReportArgs struct {
-	TaskID int
-	TaskType int
+	TaskID     int       // taskid
+	TaskType   int       // tasktype
+	OFilenames []string  // map task report intermediate filenames, reduce task report result
 }
 
 type TaskReportReply struct {
-	TaskID int
-	TaskType int
-	Status int
 }
 
 // Cook up a unique-ish UNIX-domain socket name
