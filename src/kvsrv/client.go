@@ -41,11 +41,8 @@ func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	args := &GetArgs{Key: key}
 	reply := &GetReply{}
-	ok := ck.server.Call("KVServer.Get", args, reply)
-	if ok {
-		return reply.Value
-	}
-	return ""
+	for !ck.server.Call("KVServer.Get", args, reply) {}
+	return reply.Value
 }
 
 // shared by Put and Append.
@@ -58,23 +55,15 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
 	// You will have to modify this function.
-	switch op {
-	case "Put":
-		args := &PutAppendArgs{Key: key, Value: value}
-		reply := &PutAppendReply{}
-		ok := ck.server.Call("KVServer.Put", args, reply)
-		if ok {
-			return reply.Value
-		}
-	case "Append":
-		args := &PutAppendArgs{Key: key, Value: value}
-		reply := &PutAppendReply{}
-		ok := ck.server.Call("KVServer.Append", args, reply)
-		if ok {
-			return reply.Value
-		}
-	}
-	return ""
+	args := &PutAppendArgs{Key: key, Value: value, RequestID: nrand(), RequestType: 0}
+	reply := &PutAppendReply{}
+	for !ck.server.Call("KVServer."+op, args, reply) {}
+	ret := reply.Value
+	reportArgs := args
+	reportArgs.RequestType = 1
+	reportReply := &PutAppendReply{}
+	for !ck.server.Call("KVServer."+op, reportArgs, reportReply) {}
+	return ret
 }
 
 func (ck *Clerk) Put(key string, value string) {
