@@ -24,6 +24,12 @@ const (
 
 const HeartbeatTimeout = 100 * time.Millisecond
 
+type LogEntry struct {
+	Term    int
+	Command interface{}
+	Index   int
+}
+
 // Randomly generate a timeout between 100ms and 400ms
 func randomElectionTimeout() time.Duration {
 	return time.Duration(100 + rand.Intn(300)) * time.Millisecond
@@ -109,7 +115,7 @@ func (rf *Raft) broadcastRequestVote() {
 				LastLogTerm:  lastLogTerm,
 			}
 			reply := RequestVoteReply{}
-			for !rf.sendRequestVote(peer, &args, &reply) {
+			if !rf.sendRequestVote(peer, &args, &reply) {
 				return
 			}
 			rf.handleRequestVoteReply(&reply, term)
@@ -146,4 +152,58 @@ func (rf *Raft) handleRequestVoteReply(reply *RequestVoteReply, term int) {
 }
 
 func (rf *Raft) startLeader() {
+	for {
+		rf.broadcastHeartBeat()
+		time.Sleep(HeartbeatTimeout)
+	}
+}
+
+func (rf *Raft) broadcastHeartBeat() {
+	rf.mu.Lock()
+	if rf.state != Leader {
+		rf.mu.Unlock()
+		return
+	}
+	term := rf.currentTerm
+	leaderId := rf.me
+	rf.mu.Unlock()
+	// broadcast AppendEntries RPCs to all other servers
+	for peer := range rf.peers {
+		if peer == leaderId {
+			continue
+		}
+		// concurrent RPC calls
+		go func(peer int) {
+			rf.mu.Lock()
+			prevLogIndex := 0
+			prevLogTerm := 0
+			rf.mu.Unlock()
+			args := AppendEntriesArgs{
+				Term        : term,
+				LeaderId    : leaderId,
+				PrevLogIndex: prevLogIndex,
+				PrevLogTerm : prevLogTerm,
+				Entries     : nil,
+				LeaderCommit: 0,
+			}
+			reply := AppendEntriesReply{}
+			if !rf.sendAppendEntries(peer, &args, &reply) {
+				return
+			}
+			rf.handleAppendEntriesReply(&reply, term)
+		}(peer)
+	}
+}
+
+func (rf *Raft) handleAppendEntriesReply(reply *AppendEntriesReply, term int) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if reply.Term > term {
+		rf.state             = Follower
+		rf.currentTerm       = reply.Term
+		rf.votedFor          = -1
+		rf.electionTimeout   = randomElectionTimeout()
+		rf.lastElectionReset = time.Now()
+		return
+	}
 }

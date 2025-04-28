@@ -61,6 +61,9 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+	nextIndex	  []int // for each server, index of the next log entry to send to that server
+	matchIndex	[]int // for each server, index of highest log entry known to be replicated on server
+
 	// Persistent state on all servers:
 	currentTerm int // latest term server has seen (initialized to 0 on first boot, increases monotonically)
 	votedFor    int // candidateId that received vote in current term (or null if none)
@@ -107,7 +110,7 @@ func (rf *Raft) persist() {
 
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
+	if len(data) < 1 { // bootstrap without any state?
 		return
 	}
 	// Your code here (3C).
@@ -168,8 +171,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votesReceived = 0
 		rf.electionTimeout = randomElectionTimeout()
 		rf.lastElectionReset = time.Now()
+		reply.VoteGranted = true
 	} else if args.Term == rf.currentTerm {
-		if rf.votedFor != -1 {
+		if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
 			reply.VoteGranted = false
 			return
 		}
@@ -178,6 +182,36 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	} else if args.Term < rf.currentTerm {
 		reply.VoteGranted = false
 	}
+}
+
+type AppendEntriesArgs struct {
+	Term         int // leader's term
+	LeaderId     int // so follower can redirect clients
+	PrevLogIndex int // index of log entry immediately preceding new ones
+	PrevLogTerm  int // term of prevLogIndex entry
+	Entries      []LogEntry // log entries to store (empty for heartbeat; may send more than one for efficiency)
+	LeaderCommit int // leader's commitIndex
+}
+type AppendEntriesReply struct {
+	Term    int  // currentTerm, for leader to update itself
+	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	reply.Term = rf.currentTerm
+	if args.Term < rf.currentTerm {
+		reply.Success = false
+		return
+	}
+	rf.currentTerm       = args.Term
+	rf.state             = Follower
+	rf.votedFor          = -1
+	rf.votesReceived     = 0
+	rf.electionTimeout   = randomElectionTimeout()
+	rf.lastElectionReset = time.Now()
+	reply.Success = true
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -209,6 +243,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	return ok
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
 
@@ -272,6 +311,7 @@ func (rf *Raft) ticker() {
 			}
 		case Candidate:
 			if rf.checkTimeout() {
+				rf.startElection()
 				rf.broadcastRequestVote()
 			}
 		case Leader:
