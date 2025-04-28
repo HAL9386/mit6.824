@@ -15,12 +15,14 @@ func DPrintf(format string, a ...interface{}) {
 	}
 }
 
-type StateType int
+// type StateType int32
 const (
-	Follower StateType = iota
+	Follower int32 = iota
 	Candidate
 	Leader
 )
+
+const HeartbeatTimeout = 100 * time.Millisecond
 
 // Randomly generate a timeout between 100ms and 400ms
 func randomElectionTimeout() time.Duration {
@@ -55,11 +57,43 @@ func (rf *Raft) startElection() {
 	rf.currentTerm       += 1
 	rf.votedFor           = rf.me
 	rf.votesReceived      = 1                    // vote for self
+	// term                 := rf.currentTerm
+	// me                   := rf.me
+	// lastLogIndex         := rf.getLastLogIndex()
+	// lastLogTerm          := rf.getLastLogTerm()
+	// rf.electionTimeout    = randomElectionTimeout()
+	// rf.lastElectionReset  = time.Now()
+	rf.mu.Unlock()
+	// // broadcast RequestVote RPCs to all other servers
+	// for peer := range rf.peers {
+	// 	if peer == rf.me {
+	// 		continue
+	// 	}
+	// 	// concurrent RPC calls
+	// 	go func(peer int) {
+	// 		args := RequestVoteArgs{
+	// 			Term:         term,
+	// 			CandidateId:  me,
+	// 			LastLogIndex: lastLogIndex,
+	// 			LastLogTerm:  lastLogTerm,
+	// 		}
+	// 		reply := RequestVoteReply{}
+	// 		for !rf.sendRequestVote(peer, &args, &reply) {
+	// 			return
+	// 		}
+	// 		rf.handleRequestVoteReply(&reply, term)
+	// 	}(peer)
+	// }
+}
+
+func (rf *Raft) broadcastRequestVote() {
+	rf.mu.Lock()
 	term                 := rf.currentTerm
 	me                   := rf.me
 	lastLogIndex         := rf.getLastLogIndex()
 	lastLogTerm          := rf.getLastLogTerm()
-	rf.lastElectionReset  = time.Now()
+	rf.lastElectionReset	= time.Now()
+	rf.electionTimeout    = randomElectionTimeout()
 	rf.mu.Unlock()
 	// broadcast RequestVote RPCs to all other servers
 	for peer := range rf.peers {
@@ -75,51 +109,41 @@ func (rf *Raft) startElection() {
 				LastLogTerm:  lastLogTerm,
 			}
 			reply := RequestVoteReply{}
-			if !rf.sendRequestVote(peer, &args, &reply) {
+			for !rf.sendRequestVote(peer, &args, &reply) {
 				return
 			}
 			rf.handleRequestVoteReply(&reply, term)
 		}(peer)
 	}
+
 }
 
 func (rf *Raft) handleRequestVoteReply(reply *RequestVoteReply, term int) {
 	rf.mu.Lock()
-	// defer rf.mu.Unlock()
+	defer rf.mu.Unlock()
 	// check if the term is still the same
 	if rf.state != Candidate || term != rf.currentTerm {
-		rf.mu.Unlock()
+		// rf.mu.Unlock()
 		return
 	}
 	// handle the reply
 	if reply.VoteGranted {
 		rf.votesReceived++
-		if rf.votesReceived > len(rf.peers)/2 {
+		if rf.votesReceived > len(rf.peers)/2 { // receive majority votes
 			rf.state = Leader
-			rf.mu.Unlock()
-			rf.startLeader()
+			// rf.mu.Unlock()
+			// rf.startLeader()
 			return 
 		}
 	} else if reply.Term > rf.currentTerm {
 		rf.state             = Follower
 		rf.currentTerm       = reply.Term
 		rf.votedFor          = -1
+		rf.electionTimeout	 = randomElectionTimeout()
 		rf.lastElectionReset = time.Now()
 	}
-	rf.mu.Unlock()
+	// rf.mu.Unlock()
 }
 
 func (rf *Raft) startLeader() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	// initialize nextIndex and matchIndex
-	for i := range rf.peers {
-		if i == rf.me {
-			continue
-		}
-		rf.nextIndex[i] = rf.getLastLogIndex() + 1
-		rf.matchIndex[i] = 0
-	}
-	rf.broadcastAppendEntries()
-	go rf.leaderHeartbeat()
 }

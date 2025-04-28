@@ -66,10 +66,10 @@ type Raft struct {
 	votedFor    int // candidateId that received vote in current term (or null if none)
 
 	// Volatile state on all servers:
-	state             StateType     // Follower, Candidate, Leader
+	state             int32         // Follower, Candidate, Leader
 	electionTimeout   time.Duration // timeout for elections
 	lastElectionReset time.Time     // last time a election relevant message was received
-	votesReceived		  int          // number of votes received in current term
+	votesReceived		  int           // number of votes received in current term
 }
 
 // return currentTerm and whether this server
@@ -79,6 +79,10 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (3A).
+	rf.mu.Lock()
+	term = rf.currentTerm
+	isleader = rf.state == Leader
+	rf.mu.Unlock()
 	return term, isleader
 }
 
@@ -153,6 +157,27 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	reply.Term = rf.currentTerm
+	// check if the term is up to date
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.state = Follower
+		rf.votedFor = -1
+		rf.votesReceived = 0
+		rf.electionTimeout = randomElectionTimeout()
+		rf.lastElectionReset = time.Now()
+	} else if args.Term == rf.currentTerm {
+		if rf.votedFor != -1 {
+			reply.VoteGranted = false
+			return
+		}
+		rf.votedFor = args.CandidateId
+		reply.VoteGranted = true
+	} else if args.Term < rf.currentTerm {
+		reply.VoteGranted = false
+	}
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -236,22 +261,27 @@ func (rf *Raft) ticker() {
 		// Your code here (3A)
 		// Check if a leader election should be started.
 
-		rf.mu.Lock()
-		state := rf.state
-		rf.mu.Unlock()
+		// rf.mu.Lock()
+		// state := rf.state
+		// rf.mu.Unlock()
+		state := atomic.LoadInt32(&rf.state)
 		switch state {
 		case Follower:
 			if rf.checkTimeout() {
 				rf.startElection()
 			}
 		case Candidate:
+			if rf.checkTimeout() {
+				rf.broadcastRequestVote()
+			}
 		case Leader:
+			rf.startLeader()
 		}
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 50 //+ (rand.Int63() % 300)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
+		// ms := 50 + (rand.Int63() % 300)
+		// time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
 
@@ -272,6 +302,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (3A, 3B, 3C).
+	rf.dead              = 0
+	rf.state             = Follower
+	rf.currentTerm       = 0
+	rf.votedFor          = -1
+	rf.votesReceived     = 0
+	rf.electionTimeout   = randomElectionTimeout()
+	rf.lastElectionReset = time.Now()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
