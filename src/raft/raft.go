@@ -165,19 +165,22 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	// check if the term is up to date
 	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.state = Follower
-		rf.votedFor = -1
-		rf.votesReceived = 0
-		rf.electionTimeout = randomElectionTimeout()
-		rf.lastElectionReset = time.Now()
+		rf.convertToFollower(args.Term, args.CandidateId)
 		reply.VoteGranted = true
 	} else if args.Term == rf.currentTerm {
+		// already voted for someone else, reject
 		if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
 			reply.VoteGranted = false
 			return
 		}
-		rf.votedFor = args.CandidateId
+		// else
+		// votedFor == -1 || votedFor == args.CandidateId
+		// check if the candidate's log is up to date
+		if rf.getLastLogTerm() > args.LastLogTerm || rf.getLastLogIndex() > args.LastLogIndex {
+			reply.VoteGranted = false
+			return
+		}
+		rf.convertToFollower(args.Term, args.CandidateId)
 		reply.VoteGranted = true
 	} else if args.Term < rf.currentTerm {
 		reply.VoteGranted = false

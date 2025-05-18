@@ -3,6 +3,7 @@ package raft
 import (
 	"log"
 	"math/rand"
+	"sync/atomic"
 	"time"
 )
 
@@ -57,49 +58,27 @@ func (rf *Raft) getLastLogTerm() int {
 	return 0
 }
 
+func (rf *Raft) resetElectionTimer() {
+	rf.electionTimeout = randomElectionTimeout()
+	rf.lastElectionReset = time.Now()
+}
+
 func (rf *Raft) startElection() {
 	rf.mu.Lock()
 	rf.state              = Candidate
 	rf.currentTerm       += 1
 	rf.votedFor           = rf.me
-	rf.votesReceived      = 1                    // vote for self
-	// term                 := rf.currentTerm
-	// me                   := rf.me
-	// lastLogIndex         := rf.getLastLogIndex()
-	// lastLogTerm          := rf.getLastLogTerm()
-	// rf.electionTimeout    = randomElectionTimeout()
-	// rf.lastElectionReset  = time.Now()
+	rf.votesReceived      = 1         // vote for self
 	rf.mu.Unlock()
-	// // broadcast RequestVote RPCs to all other servers
-	// for peer := range rf.peers {
-	// 	if peer == rf.me {
-	// 		continue
-	// 	}
-	// 	// concurrent RPC calls
-	// 	go func(peer int) {
-	// 		args := RequestVoteArgs{
-	// 			Term:         term,
-	// 			CandidateId:  me,
-	// 			LastLogIndex: lastLogIndex,
-	// 			LastLogTerm:  lastLogTerm,
-	// 		}
-	// 		reply := RequestVoteReply{}
-	// 		for !rf.sendRequestVote(peer, &args, &reply) {
-	// 			return
-	// 		}
-	// 		rf.handleRequestVoteReply(&reply, term)
-	// 	}(peer)
-	// }
 }
 
 func (rf *Raft) broadcastRequestVote() {
 	rf.mu.Lock()
-	term                 := rf.currentTerm
-	me                   := rf.me
-	lastLogIndex         := rf.getLastLogIndex()
-	lastLogTerm          := rf.getLastLogTerm()
-	rf.lastElectionReset	= time.Now()
-	rf.electionTimeout    = randomElectionTimeout()
+	term         := rf.currentTerm
+	me           := rf.me
+	lastLogIndex := rf.getLastLogIndex()
+	lastLogTerm  := rf.getLastLogTerm()
+	rf.resetElectionTimer()
 	rf.mu.Unlock()
 	// broadcast RequestVote RPCs to all other servers
 	for peer := range rf.peers {
@@ -121,7 +100,6 @@ func (rf *Raft) broadcastRequestVote() {
 			rf.handleRequestVoteReply(&reply, term)
 		}(peer)
 	}
-
 }
 
 func (rf *Raft) handleRequestVoteReply(reply *RequestVoteReply, term int) {
@@ -129,7 +107,6 @@ func (rf *Raft) handleRequestVoteReply(reply *RequestVoteReply, term int) {
 	defer rf.mu.Unlock()
 	// check if the term is still the same
 	if rf.state != Candidate || term != rf.currentTerm {
-		// rf.mu.Unlock()
 		return
 	}
 	// handle the reply
@@ -137,22 +114,15 @@ func (rf *Raft) handleRequestVoteReply(reply *RequestVoteReply, term int) {
 		rf.votesReceived++
 		if rf.votesReceived > len(rf.peers)/2 { // receive majority votes
 			rf.state = Leader
-			// rf.mu.Unlock()
-			// rf.startLeader()
 			return 
 		}
 	} else if reply.Term > rf.currentTerm {
-		rf.state             = Follower
-		rf.currentTerm       = reply.Term
-		rf.votedFor          = -1
-		rf.electionTimeout	 = randomElectionTimeout()
-		rf.lastElectionReset = time.Now()
+		rf.convertToFollower(reply.Term, -1)
 	}
-	// rf.mu.Unlock()
 }
 
 func (rf *Raft) startLeader() {
-	for {
+	for atomic.LoadInt32(&rf.state) == Leader {
 		rf.broadcastHeartBeat()
 		time.Sleep(HeartbeatTimeout)
 	}
@@ -199,11 +169,15 @@ func (rf *Raft) handleAppendEntriesReply(reply *AppendEntriesReply, term int) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if reply.Term > term {
-		rf.state             = Follower
-		rf.currentTerm       = reply.Term
-		rf.votedFor          = -1
-		rf.electionTimeout   = randomElectionTimeout()
-		rf.lastElectionReset = time.Now()
+		rf.convertToFollower(reply.Term, -1)
 		return
 	}
+}
+
+func (rf *Raft) convertToFollower(term int, votedFor int) {
+	rf.state         = Follower
+	rf.currentTerm   = term
+	rf.votedFor      = votedFor
+	rf.votesReceived = 0
+	rf.resetElectionTimer()
 }
