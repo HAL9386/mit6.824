@@ -33,7 +33,7 @@ type LogEntry struct {
 
 // Randomly generate a timeout between 100ms and 400ms
 func randomElectionTimeout() time.Duration {
-	return time.Duration(100 + rand.Intn(300)) * time.Millisecond
+	return time.Duration(200 + rand.Intn(300)) * time.Millisecond
 }
 
 func (rf *Raft) checkTimeout() bool {
@@ -115,14 +115,17 @@ func (rf *Raft) handleRequestVoteReply(reply *RequestVoteReply, term int) {
 
 func (rf *Raft) startLeader() {
 	rf.mu.Lock()
-	lastIndex := rf.getLastLogIndex()
 	for peer := range rf.peers {
-		rf.nextIndex[peer] = lastIndex + 1
+		if rf.nextIndex[peer] != 0 {
+			continue
+		}
+		rf.nextIndex[peer] = len(rf.log) // nextIndex is the index of the next log entry to send to the peer
 		rf.matchIndex[peer] = 0
 	}
 	rf.mu.Unlock()
 
 	for atomic.LoadInt32(&rf.state) == Leader {
+		rf.resetElectionTimer()
 		rf.broadcastAppendEntries()
 		time.Sleep(HeartbeatTimeout)
 	}
@@ -173,6 +176,9 @@ func (rf *Raft) broadcastAppendEntries() {
 func (rf *Raft) handleAppendEntriesReply(args *AppendEntriesArgs, reply *AppendEntriesReply, peer int) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	if rf.currentTerm != args.Term || rf.state != Leader {
+		return
+	}
 	if reply.Term > args.Term {
 		rf.convertToFollower(reply.Term, -1)
 		return
@@ -182,7 +188,10 @@ func (rf *Raft) handleAppendEntriesReply(args *AppendEntriesArgs, reply *AppendE
 		rf.nextIndex[peer]	= rf.matchIndex[peer] + 1
 		rf.maybeAdvanceCommitIndex()
 	} else {
-		rf.nextIndex[peer] -= 1
+		rf.nextIndex[peer]--
+		if rf.nextIndex[peer] < 1 {
+			rf.nextIndex[peer] = 1
+		} 
 	}
 }
 

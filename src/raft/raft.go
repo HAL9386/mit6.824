@@ -328,10 +328,12 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) {
 	// Your code here (3B).
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	// defer rf.mu.Unlock()
 	if rf.state != Leader {
+		rf.mu.Unlock()
 		return -1, -1, false
 	}
+	currentTerm := rf.currentTerm
 	newIndex := rf.getLastLogIndex() + 1
 	newEntry := LogEntry{
 		Index: newIndex,
@@ -339,8 +341,10 @@ func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) 
 		Command: command,
 	}
 	rf.log = append(rf.log, newEntry)
+	rf.mu.Unlock()
+	rf.broadcastAppendEntries()
 
-	return newIndex, rf.currentTerm, true
+	return newIndex, currentTerm, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
