@@ -341,6 +341,13 @@ func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) 
 		Command: command,
 	}
 	rf.log = append(rf.log, newEntry)
+	for peer := range rf.peers {
+		if rf.nextIndex[peer] != 0 {
+			continue
+		}
+		rf.nextIndex[peer] = len(rf.log) // nextIndex is the index of the next log entry to send to the peer
+		rf.matchIndex[peer] = 0
+	}
 	rf.mu.Unlock()
 	rf.broadcastAppendEntries()
 
@@ -389,6 +396,8 @@ func (rf *Raft) ticker() {
 		case Leader:
 			rf.startLeader()
 		}
+		
+		time.Sleep(100 * time.Millisecond)
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
