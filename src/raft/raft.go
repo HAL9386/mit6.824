@@ -65,6 +65,7 @@ type Raft struct {
 	matchIndex	[]int // for each server, index of highest log entry known to be replicated on server
 
 	// Persistent state on all servers:
+	log 			  []LogEntry // log entries
 	currentTerm int // latest term server has seen (initialized to 0 on first boot, increases monotonically)
 	votedFor    int // candidateId that received vote in current term (or null if none)
 
@@ -72,7 +73,9 @@ type Raft struct {
 	state             int32         // Follower, Candidate, Leader
 	electionTimeout   time.Duration // timeout for elections
 	lastElectionReset time.Time     // last time a election relevant message was received
-	votesReceived		  int           // number of votes received in current term
+	votesReceived     int           // number of votes received in current term
+	commitIndex       int           // index of highest log entry known to be committed
+	lastApplied       int           // index of highest log entry applied to state machine
 }
 
 // return currentTerm and whether this server
@@ -225,11 +228,50 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
+	// receiver implementation 1. reply false if im bigger
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		return
 	}
-	rf.convertToFollower(args.Term, -1)
+	if args.Term > rf.currentTerm {
+		rf.convertToFollower(args.Term, -1)
+	}
+	// consistency check
+	// receiver implementation 2. reply false if log doesnt contain an entry at prevLogIndex whose term matches prevLogTerm
+	if args.PrevLogIndex >= len(rf.log) ||                  // check if the prevLogIndex is in the log
+	   rf.log[args.PrevLogIndex].Term != args.PrevLogTerm { // check if the term of the prevLogIndex is correct
+		reply.Success = false
+		return
+	}
+	// append entries
+	newIndex := args.PrevLogIndex + 1
+	// receiver implementation 3. if an existing entry conflicts with a new one (same index but different term), delete the existing entry and all that follow it
+	for i, entry := range args.Entries {
+		if newIndex+i >= len(rf.log) {
+			break
+		}
+		if rf.log[newIndex+i].Term != entry.Term {
+			rf.log = rf.log[:newIndex+i]
+			break
+		}
+	}
+	// receiver implementation 4. append any new entries not already in the log
+	for i := newIndex; i < newIndex+len(args.Entries); i++ {
+		if i < len(rf.log) {
+			continue
+		}
+		rf.log = append(rf.log, args.Entries[i-newIndex])
+	}
+	// receiver implementation 5. if leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+	if args.LeaderCommit > rf.commitIndex {
+		// rf.commitIndex = min(args.LeaderCommit, rf.getLastLogIndex())
+		if (args.LeaderCommit < rf.getLastLogIndex()) {
+			rf.commitIndex = args.LeaderCommit
+		} else {
+			rf.commitIndex = rf.getLastLogIndex()
+		}
+	}
+
 	reply.Success = true
 }
 
@@ -283,15 +325,22 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // if it's ever committed. the second return value is the current
 // term. the third return value is true if this server believes it is
 // the leader.
-func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
+func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) {
 	// Your code here (3B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.state != Leader {
+		return -1, -1, false
+	}
+	newIndex := rf.getLastLogIndex() + 1
+	newEntry := LogEntry{
+		Index: newIndex,
+		Term:  rf.currentTerm,
+		Command: command,
+	}
+	rf.log = append(rf.log, newEntry)
 
-
-	return index, term, isLeader
+	return newIndex, rf.currentTerm, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -368,12 +417,42 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votesReceived = 0
 	rf.resetElectionTimer()
 
+	rf.log = make([]LogEntry, 0)
+	rf.log = append(rf.log, LogEntry{Term: 0, Command: nil, Index: 0})
+
+	// for leader
+	rf.nextIndex   = make([]int, len(peers))
+	rf.matchIndex  = make([]int, len(peers))
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
+	go rf.applier(applyCh)
 
 	return rf
+}
+
+func (rf *Raft) applier(applyCh chan ApplyMsg) {
+	for !rf.killed() {
+		rf.mu.Lock()
+		for rf.lastApplied < rf.commitIndex {
+			rf.lastApplied++
+			entry := rf.log[rf.lastApplied]
+			applyMsg := ApplyMsg{
+				CommandValid: true,
+				Command:      entry.Command,
+				CommandIndex: entry.Index,
+			}	
+			rf.mu.Unlock()
+			applyCh <- applyMsg
+			rf.mu.Lock()
+		}
+		rf.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+	}
 }

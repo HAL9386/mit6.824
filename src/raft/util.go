@@ -26,9 +26,9 @@ const (
 const HeartbeatTimeout = 100 * time.Millisecond
 
 type LogEntry struct {
-	Term    int
-	Command interface{}
-	Index   int
+	Term    int         // term of the entry
+	Command interface{} // command for the entry
+	Index   int         // index of the entry, increased from 1
 }
 
 // Randomly generate a timeout between 100ms and 400ms
@@ -43,19 +43,11 @@ func (rf *Raft) checkTimeout() bool {
 }
 
 func (rf *Raft) getLastLogIndex() int {
-	// if len(rf.log) == 0 {
-	// 	return 0
-	// }
-	// return rf.log[len(rf.log)-1].Index
-	return 0
+	return rf.log[len(rf.log) - 1].Index
 }
 
 func (rf *Raft) getLastLogTerm() int {
-	// if len(rf.log) == 0 {
-	// 	return 0
-	// }
-	// return rf.log[len(rf.log)-1].Term
-	return 0
+	return rf.log[len(rf.log) - 1].Term
 }
 
 func (rf *Raft) resetElectionTimer() {
@@ -122,21 +114,30 @@ func (rf *Raft) handleRequestVoteReply(reply *RequestVoteReply, term int) {
 }
 
 func (rf *Raft) startLeader() {
+	rf.mu.Lock()
+	lastIndex := rf.getLastLogIndex()
+	for peer := range rf.peers {
+		rf.nextIndex[peer] = lastIndex + 1
+		rf.matchIndex[peer] = 0
+	}
+	rf.mu.Unlock()
+
 	for atomic.LoadInt32(&rf.state) == Leader {
-		rf.broadcastHeartBeat()
+		rf.broadcastAppendEntries()
 		time.Sleep(HeartbeatTimeout)
 	}
 }
 
-func (rf *Raft) broadcastHeartBeat() {
+func (rf *Raft) broadcastAppendEntries() {
 	rf.mu.Lock()
 	if rf.state != Leader {
 		rf.mu.Unlock()
 		return
 	}
-	term := rf.currentTerm
+	term     := rf.currentTerm
 	leaderId := rf.me
 	rf.mu.Unlock()
+
 	// broadcast AppendEntries RPCs to all other servers
 	for peer := range rf.peers {
 		if peer == leaderId {
@@ -145,32 +146,65 @@ func (rf *Raft) broadcastHeartBeat() {
 		// concurrent RPC calls
 		go func(peer int) {
 			rf.mu.Lock()
-			prevLogIndex := 0
-			prevLogTerm := 0
+			prevLogIndex := rf.nextIndex[peer] - 1 // index of the entry preceding the new one
+			prevLogTerm  := rf.log[prevLogIndex].Term // term of the entry preceding the new one
+			entries      := make([]LogEntry, len(rf.log[rf.nextIndex[peer]:])) // entries to send, starting from nextIndex
+			copy(entries, rf.log[rf.nextIndex[peer]:])
+			leaderCommitIndex := rf.commitIndex
 			rf.mu.Unlock()
+
 			args := AppendEntriesArgs{
 				Term        : term,
 				LeaderId    : leaderId,
 				PrevLogIndex: prevLogIndex,
 				PrevLogTerm : prevLogTerm,
-				Entries     : nil,
-				LeaderCommit: 0,
+				Entries     : entries,
+				LeaderCommit: leaderCommitIndex,
 			}
 			reply := AppendEntriesReply{}
 			if !rf.sendAppendEntries(peer, &args, &reply) {
 				return
 			}
-			rf.handleAppendEntriesReply(&reply, term)
+			rf.handleAppendEntriesReply(&args, &reply, peer)
 		}(peer)
 	}
 }
 
-func (rf *Raft) handleAppendEntriesReply(reply *AppendEntriesReply, term int) {
+func (rf *Raft) handleAppendEntriesReply(args *AppendEntriesArgs, reply *AppendEntriesReply, peer int) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if reply.Term > term {
+	if reply.Term > args.Term {
 		rf.convertToFollower(reply.Term, -1)
 		return
+	}
+	if reply.Success {
+		rf.matchIndex[peer]	= args.PrevLogIndex + len(args.Entries)
+		rf.nextIndex[peer]	= rf.matchIndex[peer] + 1
+		rf.maybeAdvanceCommitIndex()
+	} else {
+		rf.nextIndex[peer] -= 1
+	}
+}
+
+func (rf *Raft) maybeAdvanceCommitIndex() {
+	for N := rf.commitIndex + 1; N <= rf.getLastLogIndex(); N++ {
+		if rf.log[N].Term != rf.currentTerm {
+			continue
+		}
+		count := 1
+		for peer := range rf.peers {
+			if peer == rf.me {
+				continue
+			}
+			if rf.matchIndex[peer] >= N {
+				count++
+			}
+		}
+		if count > len(rf.peers)/2 {
+			rf.commitIndex = N
+			// rf.applyEntries()
+			break
+		}
 	}
 }
 
