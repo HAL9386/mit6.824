@@ -163,6 +163,26 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
+
+	// 14s
+	// if args.Term < rf.currentTerm {
+	// 	reply.VoteGranted = false
+	// 	return
+	// }
+	// if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
+	// 	reply.VoteGranted = false
+	// 	return
+	// }
+	// // check if the candidate's log is up to date
+	// if rf.compareLogEntries(args.LastLogTerm, args.LastLogIndex) > 0 {
+	// 	reply.VoteGranted = false
+	// 	return
+	// }
+	// // voter for candidate
+	// rf.convertToFollower(args.Term, args.CandidateId)
+	// reply.VoteGranted = true
+
+	// 7s
 	// check if the term is up to date
 	if args.Term > rf.currentTerm {
 		rf.convertToFollower(args.Term, args.CandidateId)
@@ -176,7 +196,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// else
 		// votedFor == -1 || votedFor == args.CandidateId
 		// check if the candidate's log is up to date
-		if rf.getLastLogTerm() > args.LastLogTerm || rf.getLastLogIndex() > args.LastLogIndex {
+		// if rf.getLastLogTerm() > args.LastLogTerm || rf.getLastLogIndex() > args.LastLogIndex {
+		if rf.compareLogEntries(args.LastLogTerm, args.LastLogIndex) > 0 {
 			reply.VoteGranted = false
 			return
 		}
@@ -208,12 +229,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		return
 	}
-	rf.currentTerm       = args.Term
-	rf.state             = Follower
-	rf.votedFor          = -1
-	rf.votesReceived     = 0
-	rf.electionTimeout   = randomElectionTimeout()
-	rf.lastElectionReset = time.Now()
+	rf.convertToFollower(args.Term, -1)
 	reply.Success = true
 }
 
@@ -345,13 +361,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (3A, 3B, 3C).
-	rf.dead              = 0
-	rf.state             = Follower
-	rf.currentTerm       = 0
-	rf.votedFor          = -1
-	rf.votesReceived     = 0
-	rf.electionTimeout   = randomElectionTimeout()
-	rf.lastElectionReset = time.Now()
+	rf.dead          = 0
+	rf.state         = Follower
+	rf.currentTerm   = 0
+	rf.votedFor      = -1
+	rf.votesReceived = 0
+	rf.resetElectionTimer()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

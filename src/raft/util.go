@@ -181,3 +181,12 @@ func (rf *Raft) convertToFollower(term int, votedFor int) {
 	rf.votesReceived = 0
 	rf.resetElectionTimer()
 }
+
+func (rf *Raft) compareLogEntries(term int, index int) int {
+	myTerm  := rf.getLastLogTerm()
+	myIndex := rf.getLastLogIndex()
+	if myTerm != term {
+		return myTerm - term
+	}
+	return myIndex - index
+}
