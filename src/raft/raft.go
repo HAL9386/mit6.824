@@ -167,6 +167,17 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
 
+	// 5.6s
+	if rf.currentTerm >= args.Term {
+		reply.VoteGranted = false
+		return
+	}
+	rf.convertToFollower(args.Term, -1)
+	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) &&
+	   rf.compareLogEntries(args.LastLogTerm, args.LastLogIndex) <= 0 {
+		rf.convertToFollower(args.Term, args.CandidateId)
+		reply.VoteGranted = true
+	}
 	// 14s
 	// if args.Term < rf.currentTerm {
 	// 	reply.VoteGranted = false
@@ -187,28 +198,28 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// 7s
 	// check if the term is up to date
-	if args.Term > rf.currentTerm {
-		rf.convertToFollower(args.Term, args.CandidateId)
-		reply.VoteGranted = true
-	} else if args.Term == rf.currentTerm {
-		// already voted for someone else, reject
-		if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
-			reply.VoteGranted = false
-			return
-		}
-		// else
-		// votedFor == -1 || votedFor == args.CandidateId
-		// check if the candidate's log is up to date
-		// if rf.getLastLogTerm() > args.LastLogTerm || rf.getLastLogIndex() > args.LastLogIndex {
-		if rf.compareLogEntries(args.LastLogTerm, args.LastLogIndex) > 0 {
-			reply.VoteGranted = false
-			return
-		}
-		rf.convertToFollower(args.Term, args.CandidateId)
-		reply.VoteGranted = true
-	} else if args.Term < rf.currentTerm {
-		reply.VoteGranted = false
-	}
+	// if args.Term > rf.currentTerm {
+	// 	rf.convertToFollower(args.Term, args.CandidateId)
+	// 	reply.VoteGranted = true
+	// } else if args.Term == rf.currentTerm {
+	// 	// already voted for someone else, reject
+	// 	if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
+	// 		reply.VoteGranted = false
+	// 		return
+	// 	}
+	// 	// else
+	// 	// votedFor == -1 || votedFor == args.CandidateId
+	// 	// check if the candidate's log is up to date
+	// 	// if rf.getLastLogTerm() > args.LastLogTerm || rf.getLastLogIndex() > args.LastLogIndex {
+	// 	if rf.compareLogEntries(args.LastLogTerm, args.LastLogIndex) > 0 {
+	// 		reply.VoteGranted = false
+	// 		return
+	// 	}
+	// 	rf.convertToFollower(args.Term, args.CandidateId)
+	// 	reply.VoteGranted = true
+	// } else if args.Term < rf.currentTerm {
+	// 	reply.VoteGranted = false
+	// }
 }
 
 type AppendEntriesArgs struct {
@@ -241,6 +252,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.PrevLogIndex >= len(rf.log) ||                  // check if the prevLogIndex is in the log
 	   rf.log[args.PrevLogIndex].Term != args.PrevLogTerm { // check if the term of the prevLogIndex is correct
 		reply.Success = false
+		rf.resetElectionTimer()
 		return
 	}
 	// append entries
@@ -272,6 +284,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 
+	rf.resetElectionTimer()
 	reply.Success = true
 }
 
