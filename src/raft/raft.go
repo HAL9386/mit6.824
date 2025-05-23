@@ -258,15 +258,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// append entries
 	newIndex := args.PrevLogIndex + 1
 	// receiver implementation 3. if an existing entry conflicts with a new one (same index but different term), delete the existing entry and all that follow it
-	for i, entry := range args.Entries {
-		if newIndex+i >= len(rf.log) {
-			break
-		}
-		if rf.log[newIndex+i].Term != entry.Term {
-			rf.log = rf.log[:newIndex+i]
-			break
-		}
-	}
+	// for i, entry := range args.Entries {
+	// 	if newIndex+i >= len(rf.log) {
+	// 		break
+	// 	}
+	// 	if rf.log[newIndex+i].Term != entry.Term {
+	// 		rf.log = rf.log[:newIndex+i]
+	// 		break
+	// 	}
+	// }
+	rf.log = rf.log[:newIndex]
 	// receiver implementation 4. append any new entries not already in the log
 	for i := newIndex; i < newIndex+len(args.Entries); i++ {
 		if i < len(rf.log) {
@@ -276,12 +277,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	// receiver implementation 5. if leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.commitIndex {
-		// rf.commitIndex = min(args.LeaderCommit, rf.getLastLogIndex())
-		if (args.LeaderCommit < rf.getLastLogIndex()) {
-			rf.commitIndex = args.LeaderCommit
-		} else {
-			rf.commitIndex = rf.getLastLogIndex()
-		}
+		rf.commitIndex = min(args.LeaderCommit, rf.getLastLogIndex())
+		// if (args.LeaderCommit < rf.getLastLogIndex()) {
+		// 	rf.commitIndex = args.LeaderCommit
+		// } else {
+		// 	rf.commitIndex = rf.getLastLogIndex()
+		// }
 	}
 
 	rf.resetElectionTimer()
